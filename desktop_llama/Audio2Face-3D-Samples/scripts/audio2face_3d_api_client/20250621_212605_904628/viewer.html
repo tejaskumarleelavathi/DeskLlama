@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Audio2Face CSV Viewer</title>
+<style>
+body,html{margin:0;height:100%;background:#111;color:#eee;font:14px sans-serif;display:flex;flex-direction:column}
+#ui{padding:8px;background:#222}
+canvas{flex:1}
+button,input{margin-right:6px}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r157/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.157/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.3/papaparse.min.js"></script>
+</head>
+<body>
+<div id="ui">
+<input type="file" id="csv" accept=".csv">
+<input type="file" id="wav" accept=".wav">
+<input type="url"  id="glb" size="60" value="https://huggingface.co/embed/arkit-head/resolve/main/arkit_head.glb">
+<button id="load">Load Files</button>
+<span id="status"></span>
+</div>
+<canvas id="c"></canvas>
+
+<script>
+const canvas = document.getElementById('c'), info = document.getElementById('status');
+const renderer = new THREE.WebGLRenderer({canvas,antialias:true}); renderer.setSize(innerWidth,innerHeight-40);
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(35,canvas.width/canvas.height,.1,100); cam.position.set(0,1.4,2.2);
+const light = new THREE.DirectionalLight(0xffffff,1); light.position.set(1,2,3); scene.add(light);
+let mesh, morphDict={}, frames=[], audio;
+
+function animate(){
+  requestAnimationFrame(animate);
+  if(mesh && audio && audio.currentTime){
+    const t = audio.currentTime;
+    // find two frames around t for linear interp
+    let i = frames.findIndex(f=>f.t>t);
+    if(i<1) i=1; if(i===-1) i=frames.length-1;
+    const f0=frames[i-1], f1=frames[i];
+    const k = (t-f0.t)/(f1.t-f0.t);
+    for(const name in morphDict){
+      const v = (f1[name]??0)*k + (f0[name]??0)*(1-k);
+      mesh.morphTargetInfluences[morphDict[name]] = v;
+    }
+  }
+  renderer.render(scene,cam);
+}
+animate();
+
+document.getElementById('load').onclick = async ()=>{
+  info.textContent="Loading…";
+  const csvFile = document.getElementById('csv').files[0];
+  const wavFile = document.getElementById('wav').files[0];
+  const glbUrl  = document.getElementById('glb').value;
+
+  if(!csvFile||!wavFile){alert("Select CSV and WAV.");return;}
+
+  // 1) parse CSV → frames[]
+  frames=[]; await new Promise(res=>{
+    Papa.parse(csvFile,{
+      header:true, dynamicTyping:true, worker:true,
+      complete:r=>{
+        r.data.forEach(row=>{
+          const f={t:row.time_sec}; delete row.time_sec;
+          for(const k in row) if(row[k]!==0) f[k]=row[k];
+          frames.push(f);
+        });
+        res();
+      }});
+  });
+  info.textContent="CSV ok ";
+
+  // 2) load GLB
+  mesh=null; new THREE.GLTFLoader().load(glbUrl,g=>{
+    mesh=g.scene.children.find(o=>o.isMesh); scene.add(mesh);
+    mesh.morphTargetInfluences.forEach((_,i)=>{morphDict[mesh.morphTargetDictionary[i]]=i;});
+    info.textContent+="GLB ok ";
+  });
+
+  // 3) load audio
+  audio = new Audio(URL.createObjectURL(wavFile)); audio.onload=()=>URL.revokeObjectURL(audio.src);
+  audio.play(); info.textContent+="playing";
+};
+</script>
+</body>
+</html>
